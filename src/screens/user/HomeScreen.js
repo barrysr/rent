@@ -1,0 +1,380 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+    View,
+    Text,
+    ScrollView,
+    FlatList,
+    TouchableOpacity,
+    StyleSheet,
+    StatusBar,
+    RefreshControl,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+
+import { colors, spacing, borderRadius, typography } from '../../theme';
+import SearchBar from '../../components/SearchBar';
+import HouseCard from '../../components/HouseCard';
+import SkeletonCard from '../../components/SkeletonCard';
+import { apiGetListings, apiGetFavorites, apiToggleFavorite } from '../../services/apiService';
+import { useAuth } from '../../context/AuthContext';
+
+const HomeScreen = ({ navigation }) => {
+    const { user } = useAuth();
+    const [listings, setListings] = useState([]);
+    const [featured, setFeatured] = useState([]);
+    const [favorites, setFavorites] = useState([]);
+    const [search, setSearch] = useState('');
+    const [refreshing, setRefreshing] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [total, setTotal] = useState(0);
+    const lastFetchRef = React.useRef(0);
+
+    const STALE_MS = 30_000; // 30 seconds
+
+    const loadData = async (force = false) => {
+        // Skip re-fetch if data is still fresh (unless forced)
+        if (!force && Date.now() - lastFetchRef.current < STALE_MS && listings.length > 0) {
+            return;
+        }
+
+        // Fetch listings (limit 6) and favorites in PARALLEL
+        const [listingsRes, favRes] = await Promise.all([
+            apiGetListings({ limit: 6 }),
+            user ? apiGetFavorites(user.id) : { favorites: [] },
+        ]);
+
+        const all = listingsRes.listings;
+        setListings(all);
+        setTotal(listingsRes.total || all.length);
+        setFeatured(all.filter((l) => l.price >= 30000).slice(0, 5));
+        setFavorites(favRes.favorites);
+        lastFetchRef.current = Date.now();
+        setLoading(false);
+    };
+
+    useFocusEffect(
+        useCallback(() => {
+            loadData(); // respects staleness — won't re-fetch if < 30s old
+            setSearch(''); // clear search text on every visit
+        }, [])
+    );
+
+    const onRefresh = async () => {
+        setRefreshing(true);
+        await loadData(true); // force refresh
+        setRefreshing(false);
+    };
+
+    // Optimistic favorite toggle — no extra API call to re-fetch
+    const handleFavorite = async (listingId) => {
+        if (!user) return;
+        const { favorited } = await apiToggleFavorite(user.id, listingId);
+        setFavorites((prev) =>
+            favorited ? [...prev, listingId] : prev.filter((id) => id !== listingId)
+        );
+    };
+
+    const handleSearch = () => {
+        navigation.navigate('Explore', { query: search });
+    };
+
+    const handleMapView = () => {
+        navigation.navigate('Map');
+    };
+
+    const quickFilters = [
+        { label: 'Apartments', icon: 'business-outline', type: 'apartment' },
+        { label: 'Villas', icon: 'home-outline', type: 'villa' },
+        { label: 'Houses', icon: 'storefront-outline', type: 'house' },
+    ];
+
+    return (
+        <SafeAreaView style={styles.container} edges={['top']}>
+            <StatusBar barStyle="dark-content" backgroundColor={colors.background} />
+
+            <ScrollView
+                showsVerticalScrollIndicator={false}
+                refreshControl={
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        tintColor={colors.text}
+                        colors={[colors.text]}
+                        progressBackgroundColor={colors.card}
+                    />
+                }
+            >
+                {/* Header */}
+                <View style={styles.header}>
+                    <View>
+                        <Text style={styles.greeting}>
+                            Hello, {user?.name?.split(' ')[0] || 'there'}
+                        </Text>
+                        <Text style={styles.headerSubtitle}>Find your perfect rental</Text>
+                    </View>
+                    <TouchableOpacity
+                        style={styles.notifBtn}
+                        onPress={() => navigation.navigate('Profile')}
+                    >
+                        <View style={styles.avatar}>
+                            <Text style={styles.avatarText}>
+                                {user?.name?.charAt(0)?.toUpperCase() || 'U'}
+                            </Text>
+                        </View>
+                    </TouchableOpacity>
+                </View>
+
+                {/* Search */}
+                <View style={styles.searchSection}>
+                    <View style={{ flex: 1 }}>
+                        <SearchBar
+                            value={search}
+                            onChangeText={setSearch}
+                            onSubmit={handleSearch}
+                            placeholder="Search by location, name..."
+                        />
+                    </View>
+                    <TouchableOpacity
+                        style={styles.mapBtn}
+                        onPress={handleMapView}
+                        activeOpacity={0.8}
+                    >
+                        <Ionicons name="map" size={15} color={"#FFFFFF"} />
+                        <Text style={styles.mapBtnText}>Map</Text>
+                    </TouchableOpacity>
+                </View>
+
+                {/* Quick Category Filters */}
+                <View style={styles.categorySection}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                        <View style={styles.categoryRow}>
+                            {quickFilters.map((f) => (
+                                <TouchableOpacity
+                                    key={f.type}
+                                    style={styles.categoryBtn}
+                                    onPress={() => navigation.navigate('Explore', { type: f.type })}
+                                    activeOpacity={0.7}
+                                >
+                                    <View style={styles.categoryIcon}>
+                                        <Ionicons name={f.icon} size={22} color={colors.text} />
+                                    </View>
+                                    <Text style={styles.categoryLabel}>{f.label}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                    </ScrollView>
+                </View>
+
+                {/* Featured Listings */}
+                {featured.length > 0 && (
+                    <View style={styles.section}>
+                        <View style={styles.sectionHeader}>
+                            <Text style={styles.sectionTitle}>Featured</Text>
+                            <TouchableOpacity onPress={() => navigation.navigate('Explore')}>
+                                <Text style={styles.seeAll}>See All</Text>
+                            </TouchableOpacity>
+                        </View>
+                        <FlatList
+                            data={featured}
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: spacing.sm }}
+                            keyExtractor={(item) => item.id}
+                            renderItem={({ item }) => (
+                                <HouseCard
+                                    listing={item}
+                                    compact
+                                    onPress={() => navigation.navigate('HouseDetail', { listing: item })}
+                                />
+                            )}
+                        />
+                    </View>
+                )}
+                {loading && featured.length === 0 && (
+                    <View style={styles.section}>
+                        <View style={styles.sectionHeader}>
+                            <Text style={styles.sectionTitle}>Featured</Text>
+                        </View>
+                        <FlatList
+                            data={[1, 2, 3, 4, 5]}
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: spacing.sm }}
+                            keyExtractor={(item) => String(item)}
+                            renderItem={() => <SkeletonCard compact />}
+                        />
+                    </View>
+                )}
+
+                {/* All Listings */}
+                <View style={styles.section}>
+                    <View style={styles.sectionHeader}>
+                        <Text style={styles.sectionTitle}>All Listings</Text>
+                        <Text style={styles.countBadge}>{total}</Text>
+                    </View>
+                    <View style={styles.listingsList}>
+                        {loading && listings.length === 0
+                            ? [1, 2, 3].map((i) => <SkeletonCard key={i} />)
+                            : listings.map((item) => (
+                                <HouseCard
+                                    key={item.id}
+                                    listing={item}
+                                    onPress={() => navigation.navigate('HouseDetail', { listing: item })}
+                                    onFavorite={() => handleFavorite(item.id)}
+                                    isFavorited={favorites.includes(item.id)}
+                                />
+                            ))
+                        }
+                    </View>
+                    {total > 6 && (
+                        <TouchableOpacity
+                            style={styles.viewMoreBtn}
+                            onPress={() => navigation.navigate('Explore')}
+                        >
+                            <Text style={styles.viewMoreText}>View All Listings</Text>
+                            <Ionicons name="arrow-forward" size={18} color={colors.text} />
+                        </TouchableOpacity>
+                    )}
+                </View>
+            </ScrollView>
+        </SafeAreaView>
+    );
+};
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: colors.background,
+    },
+    header: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: spacing.xl,
+        paddingTop: spacing.lg,
+        paddingBottom: spacing.lg,
+    },
+    greeting: {
+        ...typography.h1,
+        marginBottom: 2,
+    },
+    headerSubtitle: {
+        ...typography.body,
+        color: colors.textMuted,
+    },
+    notifBtn: {
+        position: 'relative',
+    },
+    avatar: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        backgroundColor: colors.primary,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    avatarText: {
+        ...typography.h3,
+        color: '#FFFFFF',
+    },
+    searchSection: {
+        paddingHorizontal: spacing.xl,
+        marginBottom: spacing.xl,
+        flexDirection: 'row',
+        gap: spacing.sm,
+        alignItems: 'center',
+    },
+    mapBtn: {
+        height: 48,
+        borderRadius: borderRadius.md,
+        backgroundColor: colors.primary,
+        justifyContent: 'center',
+        alignItems: 'center',
+        flexShrink: 0,
+        flexDirection: 'row',
+        gap: 5,
+        paddingHorizontal: 14,
+    },
+    mapBtnText: {
+        color: '#FFFFFF',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    categorySection: {
+        marginBottom: spacing.xl,
+    },
+    categoryRow: {
+        flexDirection: 'row',
+        paddingHorizontal: spacing.xl,
+        gap: spacing.md,
+    },
+    categoryBtn: {
+        alignItems: 'center',
+        gap: spacing.sm,
+    },
+    categoryIcon: {
+        width: 56,
+        height: 56,
+        borderRadius: 16,
+        backgroundColor: colors.surface,
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: '#2C3E50',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
+        elevation: 2,
+    },
+    categoryLabel: {
+        ...typography.caption,
+        color: colors.textSecondary,
+        fontWeight: '500',
+    },
+    section: {
+        marginBottom: spacing.xxxl,
+    },
+    sectionHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: spacing.xl,
+        marginBottom: spacing.lg,
+    },
+    sectionTitle: {
+        ...typography.h2,
+    },
+    seeAll: {
+        ...typography.body,
+        color: colors.textMuted,
+        fontWeight: '500',
+    },
+    countBadge: {
+        ...typography.caption,
+        color: colors.textMuted,
+        backgroundColor: colors.surface,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.xs,
+        borderRadius: borderRadius.full,
+        overflow: 'hidden',
+    },
+    listingsList: {
+        paddingHorizontal: spacing.xl,
+    },
+    viewMoreBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginHorizontal: spacing.xl,
+        paddingVertical: spacing.lg,
+        borderRadius: borderRadius.md,
+        backgroundColor: colors.elevated,
+        gap: spacing.sm,
+    },
+    viewMoreText: {
+        ...typography.bodyBold,
+    },
+});
+
+export default HomeScreen;
